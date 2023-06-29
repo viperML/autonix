@@ -94,6 +94,7 @@ dependencies = [
  "fuse3",
  "futures-util",
  "libc",
+ "nix",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -491,6 +492,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "memoffset",
+ "pin-utils",
  "static_assertions",
 ]
 

@@ -8,6 +8,5 @@
         rustfmt
       ];
       RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
-      RUST_BACKTRACE = "1";
     };
 }

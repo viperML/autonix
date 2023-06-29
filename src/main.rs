@@ -1,18 +1,22 @@
+mod init;
+
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::iter::Skip;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use std::vec::IntoIter;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use clap::Parser;
+use color_eyre::eyre::Context;
 use fuse3::raw::prelude::*;
 use fuse3::{MountOptions, Result};
 use futures_util::stream;
 use futures_util::stream::Iter;
 use tokio::signal::unix::SignalKind;
-use tracing::{info, Level};
-use tracing_subscriber::prelude::*;
+use tracing::{info, instrument};
 
 const CONTENT: &str = "hello world\n";
 
@@ -33,19 +37,23 @@ const STATFS: ReplyStatFs = ReplyStatFs {
     frsize: 0,
 };
 
-struct HelloWorld;
+#[derive(Debug)]
+struct FS;
 
 #[async_trait]
-impl Filesystem for HelloWorld {
+impl Filesystem for FS {
     type DirEntryStream = Iter<Skip<IntoIter<Result<DirectoryEntry>>>>;
     type DirEntryPlusStream = Iter<Skip<IntoIter<Result<DirectoryEntryPlus>>>>;
 
+    #[instrument(ret, level = "trace")]
     async fn init(&self, _req: Request) -> Result<()> {
         Ok(())
     }
 
+    #[instrument(ret, level = "trace")]
     async fn destroy(&self, _req: Request) {}
 
+    #[instrument(ret, level = "trace")]
     async fn lookup(&self, _req: Request, parent: u64, name: &OsStr) -> Result<ReplyEntry> {
         if parent != PARENT_INODE {
             return Err(libc::ENOENT.into());
@@ -76,6 +84,7 @@ impl Filesystem for HelloWorld {
         })
     }
 
+    #[instrument(ret, level = "trace")]
     async fn getattr(
         &self,
         _req: Request,
@@ -126,6 +135,7 @@ impl Filesystem for HelloWorld {
         }
     }
 
+    #[instrument(ret, level = "trace")]
     async fn open(&self, _req: Request, inode: u64, flags: u32) -> Result<ReplyOpen> {
         if inode != PARENT_INODE && inode != FILE_INODE {
             return Err(libc::ENOENT.into());
@@ -134,6 +144,7 @@ impl Filesystem for HelloWorld {
         Ok(ReplyOpen { fh: 0, flags })
     }
 
+    #[instrument(level = "trace")]
     async fn read(
         &self,
         _req: Request,
@@ -161,6 +172,7 @@ impl Filesystem for HelloWorld {
         }
     }
 
+    #[instrument(level = "trace")]
     async fn readdir(
         &self,
         _req: Request,
@@ -202,6 +214,7 @@ impl Filesystem for HelloWorld {
         })
     }
 
+    #[instrument(ret, level = "trace")]
     async fn access(&self, _req: Request, inode: u64, _mask: u32) -> Result<()> {
         if inode != PARENT_INODE && inode != FILE_INODE {
             return Err(libc::ENOENT.into());
@@ -210,6 +223,7 @@ impl Filesystem for HelloWorld {
         Ok(())
     }
 
+    #[instrument(level = "trace")]
     async fn readdirplus(
         &self,
         _req: Request,
@@ -306,73 +320,60 @@ impl Filesystem for HelloWorld {
         })
     }
 
+    #[instrument(ret, skip(self))]
     async fn statfs(&self, _req: Request, _inode: u64) -> Result<ReplyStatFs> {
         Ok(STATFS)
     }
 }
 
+#[derive(Debug, Parser)]
+struct Args {
+    /// Root mount point
+    mount_path: PathBuf,
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> color_eyre::Result<()> {
-    init()?;
+    init::init()?;
 
-    let args = env::args_os().skip(1).take(1).collect::<Vec<_>>();
+    let args = Args::parse();
+    let mount_path = &args.mount_path;
 
-    let mount_path = args.first();
-
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
+    let uid = nix::unistd::Uid::current().as_raw();
+    let gid = nix::unistd::Gid::current().as_raw();
 
     let mut mount_options = MountOptions::default();
     mount_options.uid(uid).gid(gid).read_only(true);
 
-    let mount_path = mount_path.expect("no mount point specified");
+    let filesystem = FS {};
+
     let handle = Session::new(mount_options)
-        .mount_with_unprivileged(HelloWorld {}, mount_path)
+        .mount_with_unprivileged(filesystem, mount_path)
         .await?;
 
     let task = tokio::spawn(handle);
     tokio::pin!(task);
 
-    // tokio::signal::unix::signal(SignalKind::interrupt())?.recv().await;
-
-    let sig = tokio::signal::unix::signal(SignalKind::interrupt())?;
-    tokio::pin!(sig);
+    let interrupt = tokio::signal::unix::signal(SignalKind::interrupt())?;
+    tokio::pin!(interrupt);
 
     loop {
         tokio::select! {
             res = &mut task => res??,
-            _ = sig.recv() => break,
+            _ = interrupt.recv() => {
+                info!("Received interrupt signal!");
+                break;
+            }
         }
     }
 
-    info!("Received interrupt signal!");
-
-    let mut child = tokio::process::Command::new("fusermount3")
-        .args(&["-u", mount_path.to_str().unwrap()])
-        .spawn()?;
-
-    child.wait().await?;
-
-    Ok(())
-}
-
-fn init() -> color_eyre::Result<()> {
-    color_eyre::install()?;
-
-    let layer_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive("debug".parse()?)
-        .add_directive("autonix=trace".parse()?);
-
-    let layer_fmt = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .without_time()
-        .with_line_number(true)
-        .compact();
-
-    tracing_subscriber::registry()
-        .with(layer_filter)
-        .with(layer_fmt)
-        .init();
+    tokio::process::Command::new("fusermount3")
+        .arg("-u")
+        .arg(mount_path)
+        .spawn()
+        .wrap_err("Unmounting")?
+        .wait()
+        .await?;
 
     Ok(())
 }
