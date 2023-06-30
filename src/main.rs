@@ -1,7 +1,10 @@
+mod index;
 mod init;
 
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs::Metadata;
 use std::iter::Skip;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -12,11 +15,14 @@ use bytes::Bytes;
 use clap::Parser;
 use color_eyre::eyre::Context;
 use fuse3::raw::prelude::*;
-use fuse3::{MountOptions, Result};
+use fuse3::{Errno, MountOptions, Result};
 use futures_util::stream;
 use futures_util::stream::Iter;
+use once_cell::sync::OnceCell;
 use tokio::signal::unix::SignalKind;
 use tracing::{info, instrument};
+// use std::os::linux::fs::MetadataExt;
+use std::os::unix::fs::MetadataExt;
 
 const CONTENT: &str = "hello world\n";
 
@@ -40,6 +46,8 @@ const STATFS: ReplyStatFs = ReplyStatFs {
 #[derive(Debug)]
 struct FS;
 
+static AVAILABLE_PROGRAMS: OnceCell<HashSet<OsString>> = OnceCell::new();
+
 #[async_trait]
 impl Filesystem for FS {
     type DirEntryStream = Iter<Skip<IntoIter<Result<DirectoryEntry>>>>;
@@ -59,29 +67,39 @@ impl Filesystem for FS {
             return Err(libc::ENOENT.into());
         }
 
-        if name != OsStr::new(FILE_NAME) {
-            return Err(libc::ENOENT.into());
-        }
+        match AVAILABLE_PROGRAMS.get().unwrap().get(name) {
+            None => Err(libc::ENOENT.into()),
+            Some(elem) => {
+                let built_path = OsString::from("/nix/store/wqli2kd1pllxbbxbkbhf6dkkvqf86q9d-neofetch-unstable-2021-12-10/bin/neofetch");
 
-        Ok(ReplyEntry {
-            ttl: TTL,
-            attr: FileAttr {
-                ino: FILE_INODE,
-                size: CONTENT.len() as u64,
-                blocks: 0,
-                atime: SystemTime::now().into(),
-                mtime: SystemTime::now().into(),
-                ctime: SystemTime::now().into(),
-                kind: FileType::RegularFile,
-                perm: FILE_MODE,
-                nlink: 0,
-                uid: 0,
-                gid: 0,
-                rdev: 0,
-                blksize: 0,
-            },
-            generation: 0,
-        })
+                let meta = std::fs::metadata(built_path).map_err(|_| Errno::from(libc::ENOENT))?;
+
+                let ino = meta.ino();
+                let perm = meta.mode();
+                // let perm = meta.
+
+                Ok(ReplyEntry {
+                    ttl: TTL,
+                    attr: FileAttr {
+                        ino: ino,
+                        // size: CONTENT.len() as u64,
+                        size: 0,
+                        blocks: 0,
+                        atime: SystemTime::now().into(),
+                        mtime: SystemTime::now().into(),
+                        ctime: SystemTime::now().into(),
+                        kind: FileType::RegularFile,
+                        perm: perm as u16,
+                        nlink: 0,
+                        uid: 0,
+                        gid: 0,
+                        rdev: 0,
+                        blksize: 0,
+                    },
+                    generation: 0,
+                })
+            }
+        }
     }
 
     #[instrument(ret, level = "trace")]
@@ -335,6 +353,10 @@ struct Args {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> color_eyre::Result<()> {
     init::init()?;
+
+    let mut programs = HashSet::new();
+    programs.insert(OsString::from("neofetch"));
+    AVAILABLE_PROGRAMS.set(programs).unwrap();
 
     let args = Args::parse();
     let mount_path = &args.mount_path;

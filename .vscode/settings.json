@@ -1,5 +1,6 @@
 {
     "files.exclude": {
         "test": true
-    }
+    },
+    "rust-analyzer.showUnlinkedFileNotification": false
 }

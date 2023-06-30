@@ -1,7 +1,4 @@
 *result*
 .direnv
-
-
-# Added by cargo
-
-/target
+target
+index-*

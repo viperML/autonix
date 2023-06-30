@@ -9,7 +9,7 @@ pub(crate) fn init() -> color_eyre::Result<()> {
 
     let layer_fmt = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .without_time()
+        // .without_time()
         .with_line_number(true)
         .compact();
 
