@@ -1,6 +1,8 @@
 {pkgs, ...}: {
   devShells.default = with pkgs;
-    mkShell {
+    mkShell.override {
+      stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
+    } {
       packages = [
         rustc
         cargo
